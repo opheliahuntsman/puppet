@@ -47,7 +47,7 @@ No additional setup needed - everything is configured!
 
 #### Windows:
 Simply double-click `launch.bat` - that's it! The app will:
-- Auto-install dependencies (first time only)
+- Auto-install dependencies (when missing)
 - Auto-create configuration with SQLite database
 - Auto-start the application
 
