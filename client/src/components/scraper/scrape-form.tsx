@@ -64,9 +64,15 @@ export function ScrapeForm({ onSubmit, isLoading, config }: ScrapeFormProps) {
     },
     onSuccess: (data: any) => {
       const count = data.jobs?.length || 1;
+      const duplicatesRemoved = data.duplicatesRemoved || 0;
+      
+      const description = duplicatesRemoved > 0
+        ? `Started ${count} scraping job${count > 1 ? 's' : ''}. Removed ${duplicatesRemoved} duplicate URL${duplicatesRemoved > 1 ? 's' : ''}.`
+        : `Started ${count} scraping job${count > 1 ? 's' : ''}. This may take a few minutes.`;
+      
       toast({
         title: "Scrape Started",
-        description: `Started ${count} scraping job${count > 1 ? 's' : ''}. This may take a few minutes.`,
+        description,
       });
       onSubmit(data.jobs?.map((job: any) => job.jobId) || [data.jobId]);
     },
