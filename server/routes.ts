@@ -38,8 +38,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
         console.log(`Removed ${duplicateCount} duplicate URL(s) from bulk request. Processing ${uniqueUrls.length} unique URLs.`);
       }
 
-      if (uniqueUrls.length > 20) {
-        return res.status(400).json({ error: "Maximum 20 URLs allowed per bulk request" });
+      if (uniqueUrls.length > 50) {
+        return res.status(400).json({ error: "Maximum 50 URLs allowed per bulk request" });
       }
 
       const jobs = [];
