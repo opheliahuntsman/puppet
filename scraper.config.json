@@ -1,0 +1,26 @@
+{
+  "vpn": {
+    "enabled": false,
+    "command": "manual",
+    "connectionVerifyUrl": "https://www.google.com",
+    "connectionVerifyTimeout": 5000,
+    "maxRetries": 10,
+    "retryDelay": 2000,
+    "changeAfterFailures": 5
+  },
+  "waitTimes": {
+    "scrollDelay": 1000,
+    "minVariance": 2000,
+    "maxVariance": 5000
+  },
+  "scraping": {
+    "concurrency": 2,
+    "maxRetryRounds": 2,
+    "retryDelay": 5000,
+    "detectEmptyResults": true
+  },
+  "metadata": {
+    "metadataTimeout": 15000,
+    "cookieBannerSelector": ".cky-btn.cky-btn-accept"
+  }
+}
