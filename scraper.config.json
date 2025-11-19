@@ -22,5 +22,10 @@
   "metadata": {
     "metadataTimeout": 15000,
     "cookieBannerSelector": ".cky-btn.cky-btn-accept"
+  },
+  "navigation": {
+    "timeout": 60000,
+    "waitUntil": "domcontentloaded",
+    "maxConcurrentJobs": 3
   }
 }
