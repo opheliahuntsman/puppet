@@ -2,19 +2,58 @@
 
 ## Overview
 
-The scraper now supports extracting full-resolution canvas images from SmartFrame embeds. This feature uses a Chrome extension (ported from the Python `smartframe_extractor.py`) to bypass canvas tainting restrictions and extract high-resolution images directly from the canvas element.
+The scraper now supports extracting full-resolution canvas images from SmartFrame embeds. Users can select canvas extraction mode directly from the web interface without editing any code.
+
+## Quick Start
+
+1. **Open the scraper web interface**
+2. **Click "Show Advanced Options"**
+3. **Select canvas extraction mode:**
+   - **No Canvas Images** - Metadata only (default, fastest)
+   - **Thumbnail (600x600)** - Extract thumbnail-sized canvas images
+   - **High Resolution (9999x9999)** - Extract full-resolution canvas images
+4. **Start scraping** - Canvas images will be automatically extracted
+
+No configuration files or code editing required!
 
 ## Features
 
 - 🎨 **Full Canvas Extraction**: Extract full-resolution canvas images from SmartFrame embeds
-- 📐 **Configurable Viewport**: Choose between full (9999x9999) or thumbnail (600x600) rendering
-- 🔧 **Chrome Extension**: Uses Manifest V3 Chrome extension for canvas access
+- 📐 **Three Modes**: Choose between no images, thumbnail (600x600), or full resolution (9999x9999)
+- 🖱️ **UI Control**: Select mode from dropdown - no code editing needed
+- 🔧 **Per-Job Configuration**: Each scrape job can have different settings
 - 💾 **Automatic Storage**: Extracted images are saved alongside metadata
 - 🖼️ **PNG Output**: Canvas images are saved as high-quality PNG files
 
+## Image Filenames
+
+Canvas images are saved with the SmartFrame imageId as the filename:
+
+**Format:** `{imageId}_canvas_{mode}.png`
+
+**Examples:**
+- `abc123_canvas_full.png` - Full resolution image (9999x9999)
+- `abc123_canvas_thumbnail.png` - Thumbnail image (600x600)
+
+The imageId matches the SmartFrame image identifier, making it easy to correlate canvas images with metadata.
+
 ## Configuration
 
-Canvas extraction is configured via `scraper.config.json`:
+### Web Interface (Recommended)
+
+The easiest way to configure canvas extraction is through the web interface:
+
+1. Open the scraper web application
+2. Click **"Show Advanced Options"**
+3. Find the **"Canvas Image Extraction"** dropdown
+4. Select your preferred mode:
+   - **No Canvas Images** - Metadata only (fastest)
+   - **Thumbnail (600x600)** - Extract preview images
+   - **High Resolution (9999x9999)** - Extract full quality images
+
+### Configuration File (Optional)
+
+For advanced users, canvas extraction can also be configured via `scraper.config.json`:
 
 ```json
 {
@@ -37,22 +76,27 @@ Canvas extraction is configured via `scraper.config.json`:
 }
 ```
 
-### Configuration Options
-
-| Option | Type | Default | Description |
-|--------|------|---------|-------------|
-| `extractFullImages` | boolean | `false` | Enable/disable canvas image extraction |
-| `viewportMode` | string | `"thumbnail"` | Viewport mode: `"full"` or `"thumbnail"` |
-| `headless` | boolean | `false` | Run browser in headless mode (must be `false` for canvas rendering) |
-| `renderTimeout` | number | `5000` | Timeout in milliseconds for canvas rendering |
-| `viewportSizes.full` | object | `{width: 9999, height: 9999}` | Viewport size for full mode |
-| `viewportSizes.thumbnail` | object | `{width: 600, height: 600}` | Viewport size for thumbnail mode |
+**Note:** The web interface settings override the config file for individual scrape jobs.
 
 ## Usage
 
-### Enable Full-Resolution Extraction
+### Using the Web Interface
 
-To extract full-resolution images (9999x9999), update your `scraper.config.json`:
+1. **Access the scraper** - Open the web application in your browser
+2. **Enter SmartFrame URLs** - Add one or more SmartFrame search URLs
+3. **Show Advanced Options** - Click the "Show Advanced Options" button
+4. **Select Canvas Mode:**
+   - **No Canvas Images** - Fastest, metadata only
+   - **Thumbnail (600x600)** - Good balance of quality and speed
+   - **High Resolution (9999x9999)** - Highest quality, slower
+5. **Start Scraping** - Click "Start Scraping"
+6. **View Results** - Canvas images are saved to `downloaded_images/` directory
+
+### Using the Configuration File
+
+To enable canvas extraction globally for all scrape jobs, update your `scraper.config.json`:
+
+**For Full Resolution:**
 
 ```json
 {
@@ -80,24 +124,30 @@ To extract thumbnail-sized images (600x600):
 
 ### Run the Scraper
 
+**Via Web Interface (Recommended):**
 The scraper will automatically:
-1. Set up the Chrome extension on initialization
-2. Configure the viewport based on your settings
+1. Initialize the Chrome extension when a job requires canvas extraction
+2. Configure the viewport based on your selected mode
 3. Extract canvas images during the scraping process
 4. Save images to the `downloaded_images` directory
 5. Clean up the extension on shutdown
+
+**Via Command Line:**
+If running the scraper programmatically, canvas extraction settings are passed through the API automatically.
 
 ## Output
 
 Canvas images are saved with the following naming convention:
 
 ```
-<imageId>_canvas_<viewportMode>.png
+{imageId}_canvas_{mode}.png
 ```
 
-Examples:
-- `12345_canvas_full.png` - Full resolution image
-- `12345_canvas_thumbnail.png` - Thumbnail image
+**Examples:**
+- `abc123_canvas_full.png` - Full resolution image (imageId: abc123)
+- `xyz789_canvas_thumbnail.png` - Thumbnail image (imageId: xyz789)
+
+The imageId is the SmartFrame image identifier, making it easy to match canvas images with their metadata.
 
 The canvas image path is also stored in the scraped image metadata as `canvasImagePath`.
 
