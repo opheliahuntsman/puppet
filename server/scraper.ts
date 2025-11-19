@@ -7,6 +7,7 @@ import { transformToCleanMetadata } from "./utils/metadata-normalizer";
 import { failedScrapesLogger, FailedScrape } from "./utils/failed-scrapes-logger";
 import { VPNManager, VPNConfig } from "./utils/vpn-manager";
 import { WaitTimeHelper } from "./utils/wait-time-helper";
+import { SmartFrameExtensionManager, SmartFrameCanvasExtractor } from "./utils/smartframe-extension";
 import fs from 'fs';
 import path from 'path';
 
@@ -45,23 +46,12 @@ class SmartFrameScraper {
   private jobQueue: QueuedJob[] = [];
   private runningJobs: number = 0;
   private maxConcurrentJobs: number = 3;
+  private extensionManager: SmartFrameExtensionManager | null = null;
+  private canvasExtractor: SmartFrameCanvasExtractor | null = null;
+  private extensionDir: string | null = null;
 
   async initialize() {
-    if (!this.browser) {
-      this.browser = await puppeteer.launch({
-        headless: true,
-        args: [
-          '--no-sandbox',
-          '--disable-setuid-sandbox',
-          '--disable-dev-shm-usage',
-          '--disable-accelerated-2d-canvas',
-          '--disable-gpu',
-          '--disable-blink-features=AutomationControlled',
-        ],
-      });
-    }
-
-    // Load configuration from scraper.config.json
+    // Load configuration from scraper.config.json first
     if (!this.config) {
       try {
         const configPath = path.join(process.cwd(), 'scraper.config.json');
@@ -74,9 +64,48 @@ class SmartFrameScraper {
           vpn: { enabled: false, changeAfterFailures: 5 },
           waitTimes: { scrollDelay: 1000, minVariance: 2000, maxVariance: 5000 },
           scraping: { concurrency: 5, maxRetryRounds: 2, retryDelay: 5000, detectEmptyResults: true },
-          navigation: { timeout: 60000, waitUntil: 'domcontentloaded', maxConcurrentJobs: 3 }
+          navigation: { timeout: 60000, waitUntil: 'domcontentloaded', maxConcurrentJobs: 3 },
+          smartframe: { extractFullImages: false, viewportMode: 'thumbnail', headless: false, renderTimeout: 5000 }
         };
       }
+    }
+
+    // Initialize SmartFrame extension if canvas extraction is enabled
+    const smartframeConfig = this.config.smartframe || {};
+    const extractFullImages = smartframeConfig.extractFullImages || false;
+
+    if (extractFullImages && !this.extensionManager) {
+      console.log('🎨 SmartFrame canvas extraction enabled - setting up Chrome extension...');
+      this.extensionManager = new SmartFrameExtensionManager();
+      this.extensionDir = await this.extensionManager.setupExtension();
+      this.canvasExtractor = new SmartFrameCanvasExtractor();
+      console.log('✓ SmartFrame extension initialized');
+    }
+
+    // Launch browser with appropriate configuration
+    if (!this.browser) {
+      const launchOptions: any = {
+        headless: extractFullImages ? smartframeConfig.headless : true,
+        args: [
+          '--no-sandbox',
+          '--disable-setuid-sandbox',
+          '--disable-dev-shm-usage',
+          '--disable-accelerated-2d-canvas',
+          '--disable-gpu',
+          '--disable-blink-features=AutomationControlled',
+        ],
+      };
+
+      // Add extension if SmartFrame extraction is enabled
+      if (extractFullImages && this.extensionDir) {
+        launchOptions.args.push(
+          `--disable-extensions-except=${this.extensionDir}`,
+          `--load-extension=${this.extensionDir}`
+        );
+        console.log('✓ Chrome extension loaded for canvas extraction');
+      }
+
+      this.browser = await puppeteer.launch(launchOptions);
     }
 
     // Set max concurrent jobs from config
@@ -101,6 +130,13 @@ class SmartFrameScraper {
     if (this.browser) {
       await this.browser.close();
       this.browser = null;
+    }
+    
+    // Clean up extension
+    if (this.extensionManager) {
+      this.extensionManager.cleanup();
+      this.extensionManager = null;
+      this.extensionDir = null;
     }
   }
 
@@ -549,11 +585,23 @@ class SmartFrameScraper {
     
     // Create a pool of worker pages
     const workerPages: Page[] = [];
+    
+    // Get SmartFrame viewport configuration
+    const smartframeConfig = this.config?.smartframe || {};
+    const viewportMode = smartframeConfig.viewportMode || 'thumbnail';
+    const viewportSizes = smartframeConfig.viewportSizes || {
+      full: { width: 9999, height: 9999 },
+      thumbnail: { width: 600, height: 600 }
+    };
+    const viewport = viewportSizes[viewportMode] || { width: 1920, height: 1080 };
+    
+    console.log(`📐 Using viewport: ${viewport.width}x${viewport.height} (${viewportMode} mode)`);
+    
     for (let i = 0; i < concurrency; i++) {
       const workerPage = await this.browser!.newPage();
       
-      // Apply anti-detection setup to each worker page
-      await workerPage.setViewport({ width: 1920, height: 1080 });
+      // Apply viewport based on SmartFrame configuration
+      await workerPage.setViewport(viewport);
       await workerPage.setUserAgent(
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
       );
@@ -1294,11 +1342,21 @@ class SmartFrameScraper {
     
     // Create a pool of worker pages for retries
     const workerPages: Page[] = [];
+    
+    // Get SmartFrame viewport configuration
+    const smartframeConfig = this.config?.smartframe || {};
+    const viewportMode = smartframeConfig.viewportMode || 'thumbnail';
+    const viewportSizes = smartframeConfig.viewportSizes || {
+      full: { width: 9999, height: 9999 },
+      thumbnail: { width: 600, height: 600 }
+    };
+    const viewport = viewportSizes[viewportMode] || { width: 1920, height: 1080 };
+    
     for (let i = 0; i < concurrency; i++) {
       const workerPage = await this.browser!.newPage();
       
-      // Apply anti-detection setup
-      await workerPage.setViewport({ width: 1920, height: 1080 });
+      // Apply viewport based on SmartFrame configuration
+      await workerPage.setViewport(viewport);
       await workerPage.setUserAgent(
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
       );
@@ -2396,6 +2454,38 @@ class SmartFrameScraper {
           attempts: 1,
           timestamp: new Date().toISOString()
         });
+      }
+    }
+
+    // Extract SmartFrame canvas image if enabled
+    const smartframeConfig = this.config?.smartframe || {};
+    if (smartframeConfig.extractFullImages && this.canvasExtractor && extractDetails) {
+      try {
+        console.log(`[${imageId}] Extracting SmartFrame canvas image...`);
+        
+        // Create output directory if it doesn't exist
+        const outputDir = path.join(process.cwd(), 'downloaded_images');
+        if (!fs.existsSync(outputDir)) {
+          fs.mkdirSync(outputDir, { recursive: true });
+        }
+
+        const viewportMode = smartframeConfig.viewportMode || 'thumbnail';
+        const canvasImagePath = await this.canvasExtractor.extractCanvasImage(
+          page,
+          imageId,
+          outputDir,
+          viewportMode
+        );
+
+        if (canvasImagePath) {
+          console.log(`✓ [${imageId}] Canvas image extracted: ${canvasImagePath}`);
+          // Store the canvas image path in the image metadata for reference
+          (image as any).canvasImagePath = canvasImagePath;
+        } else {
+          console.log(`⚠️  [${imageId}] Canvas extraction failed`);
+        }
+      } catch (error) {
+        console.error(`[${imageId}] Error during canvas extraction:`, error);
       }
     }
 
