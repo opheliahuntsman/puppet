@@ -34,9 +34,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(400).json({ error: "All URLs must be from smartframe.com" });
       }
 
+      // Deduplicate URLs to avoid scraping the same content multiple times
+      const uniqueUrls = [...new Set(urls)];
+      const duplicateCount = urls.length - uniqueUrls.length;
+      
+      if (duplicateCount > 0) {
+        console.log(`Removed ${duplicateCount} duplicate URL(s) from bulk request. Processing ${uniqueUrls.length} unique URLs.`);
+      }
+
       const jobs = [];
       
-      for (const url of urls) {
+      for (const url of uniqueUrls) {
         const config = scrapeConfigSchema.parse({
           url,
           maxImages: req.body.maxImages !== undefined ? req.body.maxImages : 0,
@@ -54,7 +62,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
         });
       }
 
-      res.json({ jobs, status: "started", count: jobs.length });
+      res.json({ 
+        jobs, 
+        status: "started", 
+        count: jobs.length,
+        ...(duplicateCount > 0 && { 
+          duplicatesRemoved: duplicateCount,
+          message: `Removed ${duplicateCount} duplicate URL(s). Processing ${uniqueUrls.length} unique URLs.`
+        })
+      });
     } catch (error) {
       console.error("Error starting bulk scrape:", error);
       res.status(500).json({
