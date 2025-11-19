@@ -444,10 +444,25 @@ class SmartFrameScraper {
         }
       }
 
+      // Deduplicate images by imageId before final storage
+      // This handles edge cases where retry logic might add the same image twice
+      const uniqueImagesMap = new Map<string, ScrapedImage>();
+      for (const img of images) {
+        if (!uniqueImagesMap.has(img.imageId)) {
+          uniqueImagesMap.set(img.imageId, img);
+        }
+      }
+      const uniqueImages = Array.from(uniqueImagesMap.values());
+      const duplicatesFound = images.length - uniqueImages.length;
+      
+      if (duplicatesFound > 0) {
+        console.log(`\n⚠️  Found ${duplicatesFound} duplicate image(s) in results - removing duplicates...`);
+      }
+
       // Transform raw scraped data to clean metadata format
       console.log('\n🧹 Cleaning and normalizing metadata...');
-      const cleanImages = images.map(img => transformToCleanMetadata(img as any));
-      console.log(`✓ Transformed ${cleanImages.length} images to clean metadata format\n`);
+      const cleanImages = uniqueImages.map(img => transformToCleanMetadata(img as any));
+      console.log(`✓ Transformed ${cleanImages.length} unique images to clean metadata format\n`);
 
       // Final update with complete results (progress will be 100% since all were attempted)
       await storage.updateScrapeJob(jobId, {
@@ -497,8 +512,22 @@ class SmartFrameScraper {
           console.log(`\n🎉 Final Retry Success: Recovered ${finalRetryImages.length} images from failed-scrapes.txt!`);
           console.log(`✨ ${successfulIds.length} images removed from failed-scrapes.txt\n`);
           
+          // Deduplicate before final update
+          const uniqueUpdatedImagesMap = new Map<string, ScrapedImage>();
+          for (const img of images) {
+            if (!uniqueUpdatedImagesMap.has(img.imageId)) {
+              uniqueUpdatedImagesMap.set(img.imageId, img);
+            }
+          }
+          const uniqueUpdatedImages = Array.from(uniqueUpdatedImagesMap.values());
+          const finalDuplicatesFound = images.length - uniqueUpdatedImages.length;
+          
+          if (finalDuplicatesFound > 0) {
+            console.log(`⚠️  Removed ${finalDuplicatesFound} duplicate(s) from final retry results`);
+          }
+          
           // Update the job with recovered images
-          const updatedCleanImages = images.map(img => transformToCleanMetadata(img as any));
+          const updatedCleanImages = uniqueUpdatedImages.map(img => transformToCleanMetadata(img as any));
           await storage.updateScrapeJob(jobId, {
             scrapedImages: updatedCleanImages.length,
             images: updatedCleanImages,
