@@ -26,12 +26,25 @@ type ScrapeCallbacks = {
 // Metadata cache for network-intercepted data
 const metadataCache = new Map<string, any>();
 
+// Job queue item type
+type QueuedJob = {
+  jobId: string;
+  url: string;
+  config: ScrapeConfig;
+  callbacks: ScrapeCallbacks;
+  resolve: (value: ScrapedImage[]) => void;
+  reject: (error: Error) => void;
+};
+
 class SmartFrameScraper {
   private browser: Browser | null = null;
   private vpnManager: VPNManager | null = null;
   private waitTimeHelper: WaitTimeHelper | null = null;
   private consecutiveFailures: number = 0;
   private config: any = null;
+  private jobQueue: QueuedJob[] = [];
+  private runningJobs: number = 0;
+  private maxConcurrentJobs: number = 3;
 
   async initialize() {
     if (!this.browser) {
@@ -60,10 +73,14 @@ class SmartFrameScraper {
         this.config = {
           vpn: { enabled: false, changeAfterFailures: 5 },
           waitTimes: { scrollDelay: 1000, minVariance: 2000, maxVariance: 5000 },
-          scraping: { concurrency: 5, maxRetryRounds: 2, retryDelay: 5000, detectEmptyResults: true }
+          scraping: { concurrency: 5, maxRetryRounds: 2, retryDelay: 5000, detectEmptyResults: true },
+          navigation: { timeout: 60000, waitUntil: 'domcontentloaded', maxConcurrentJobs: 3 }
         };
       }
     }
+
+    // Set max concurrent jobs from config
+    this.maxConcurrentJobs = this.config.navigation?.maxConcurrentJobs || 3;
 
     // Initialize VPN manager
     if (!this.vpnManager && this.config.vpn) {
@@ -88,9 +105,331 @@ class SmartFrameScraper {
   }
 
   /**
-   * Dismisses cookie consent banner to prevent JavaScript blocking
-   * This ensures SmartFrame embed scripts run without delay
+   * Process the next job in the queue
    */
+  private async processNextJob(): Promise<void> {
+    if (this.jobQueue.length === 0 || this.runningJobs >= this.maxConcurrentJobs) {
+      return;
+    }
+
+    const job = this.jobQueue.shift();
+    if (!job) return;
+
+    this.runningJobs++;
+    console.log(`\n📊 Queue Status: ${this.runningJobs} running, ${this.jobQueue.length} queued`);
+
+    try {
+      const result = await this.scrapeInternal(job.jobId, job.url, job.config, job.callbacks);
+      job.resolve(result);
+    } catch (error) {
+      job.reject(error as Error);
+    } finally {
+      this.runningJobs--;
+      // Process next job in queue
+      this.processNextJob();
+    }
+  }
+
+  /**
+   * Add a scrape job to the queue
+   */
+  async scrape(
+    jobId: string,
+    url: string,
+    config: ScrapeConfig,
+    callbacks: ScrapeCallbacks = {}
+  ): Promise<ScrapedImage[]> {
+    return new Promise((resolve, reject) => {
+      this.jobQueue.push({ jobId, url, config, callbacks, resolve, reject });
+      console.log(`\n📥 Job ${jobId} added to queue (position: ${this.jobQueue.length})`);
+      this.processNextJob();
+    });
+  }
+
+  /**
+   * Internal scrape implementation (actual scraping logic)
+   */
+  private async scrapeInternal(
+    jobId: string,
+    url: string,
+    config: ScrapeConfig,
+    callbacks: ScrapeCallbacks = {}
+  ): Promise<ScrapedImage[]> {
+    await this.initialize();
+    const page = await this.browser!.newPage();
+
+    // Initialize failed scrapes logger for this job
+    failedScrapesLogger.startJob(jobId);
+
+    try {
+      await storage.updateScrapeJob(jobId, { status: "scraping" });
+      
+      console.log('\n' + '='.repeat(60));
+      console.log('STARTING SCRAPE JOB');
+      console.log('='.repeat(60));
+      console.log(`Job ID: ${jobId}`);
+      console.log(`Target URL: ${url}`);
+      console.log(`Max Images: ${config.maxImages === 0 ? 'Unlimited' : config.maxImages}`);
+      console.log(`Extract Details: ${config.extractDetails ? 'Yes' : 'No'}`);
+      console.log(`Auto-scroll: ${config.autoScroll ? 'Yes' : 'No'}`);
+      console.log('='.repeat(60) + '\n');
+      
+      // Anti-detection setup
+      await page.setViewport({ width: 1920, height: 1080 });
+      await page.setUserAgent(
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+      );
+      
+      // Add benign headers that are safe to apply globally
+      await page.setExtraHTTPHeaders({
+        'Accept-Language': 'en-US,en;q=0.9',
+        'Accept-Encoding': 'gzip, deflate, br'
+      });
+      
+      // Enhanced stealth mode - hide webdriver and spoof browser properties
+      await page.evaluateOnNewDocument(() => {
+        // Hide webdriver property
+        Object.defineProperty(navigator, 'webdriver', { get: () => false });
+        
+        // Add plugins to appear more like a real browser
+        Object.defineProperty(navigator, 'plugins', {
+          get: () => [1, 2, 3, 4, 5]
+        });
+        
+        // Add languages array
+        Object.defineProperty(navigator, 'languages', {
+          get: () => ['en-US', 'en']
+        });
+        
+        // Add chrome runtime object (present in real Chrome browsers)
+        (window as any).chrome = {
+          runtime: {}
+        };
+      });
+
+      // Setup network interception for API metadata (Strategy A)
+      await page.setRequestInterception(true);
+      page.on('request', (request) => {
+        request.continue();
+      });
+
+      page.on('response', async (response) => {
+        const url = response.url();
+        // Intercept SmartFrame API metadata calls
+        if (url.includes('smartframe.') && (url.includes('/api/') || url.includes('/metadata') || url.includes('/image/'))) {
+          try {
+            const contentType = response.headers()['content-type'];
+            if (contentType && contentType.includes('application/json')) {
+              const data = await response.json();
+              if (data && (data.imageId || data.image_id || data.id)) {
+                const imageId = data.imageId || data.image_id || data.id;
+                metadataCache.set(imageId, data);
+                console.log(`Cached metadata for image: ${imageId}`);
+              }
+            }
+          } catch (error) {
+            // Silently skip non-JSON responses
+          }
+        }
+      });
+
+      console.log(`Navigating to ${url}...`);
+      
+      // Get navigation configuration from config
+      const navigationTimeout = this.config?.navigation?.timeout || 60000;
+      const waitUntil = this.config?.navigation?.waitUntil || 'domcontentloaded';
+      
+      // Retry navigation with exponential backoff
+      let attempts = 0;
+      const maxAttempts = 3;
+      let navigationSuccess = false;
+
+      while (attempts < maxAttempts && !navigationSuccess) {
+        attempts++;
+        console.log(`Navigation attempt ${attempts}/${maxAttempts} to ${url}`);
+        
+        try {
+          await page.goto(url, {
+            waitUntil: waitUntil as any,
+            timeout: navigationTimeout
+          });
+          navigationSuccess = true;
+        } catch (error) {
+          console.error(`Navigation attempt ${attempts} failed:`, error);
+          if (attempts === maxAttempts) throw error;
+          await this.waitTimeHelper!.wait(2000 * attempts);
+        }
+      }
+
+      // Wait for SmartFrame embeds to load
+      try {
+        await page.waitForSelector('smartframe-embed, .sf-thumbnail, [data-testid="image-card"]', { timeout: 15000 });
+      } catch (error) {
+        console.log("SmartFrame elements not found with standard selectors, trying fallback...");
+        await this.waitTimeHelper!.wait(3000);
+      }
+
+      // Extract thumbnails from search page
+      const thumbnails = await this.extractThumbnailsFromSearch(page);
+      console.log(`Extracted ${thumbnails.size} thumbnails from search page`);
+
+      // Create accumulator for incrementally discovered image links
+      const discoveredLinks = new Map<string, { url: string; imageId: string; hash: string }>();
+
+      // NEW: Collect initial page before autoScroll starts
+      console.log('Collecting images from initial page...');
+      const initialPageLinks = await this.collectPageImageLinks(page);
+      for (const link of initialPageLinks) {
+        discoveredLinks.set(link.imageId, link);
+      }
+      console.log(`Initial page: collected ${discoveredLinks.size} images`);
+
+      // Auto-scroll to load all images with incremental collection
+      if (config.autoScroll) {
+        await this.autoScroll(
+          page, 
+          config.maxImages, 
+          config.scrollDelay || 1000, 
+          async (progress: ScrapeProgress) => {
+            await storage.updateScrapeJob(jobId, {
+              progress: Math.round(progress.percentage),
+              scrapedImages: progress.current,
+              totalImages: progress.total,
+            });
+          },
+          async () => {
+            // Collect images from current page after each pagination
+            const pageLinks = await this.collectPageImageLinks(page);
+            for (const link of pageLinks) {
+              discoveredLinks.set(link.imageId, link);
+            }
+            console.log(`Collected ${discoveredLinks.size} unique images so far`);
+          }
+        );
+      }
+      
+      // Convert discovered links Map to array
+      const imageLinks = Array.from(discoveredLinks.values());
+      console.log(`Total unique images collected: ${imageLinks.length}`);
+
+      // Apply max images limit if specified
+      const limitedLinks = config.maxImages === 0 ? imageLinks : imageLinks.slice(0, config.maxImages);
+
+      console.log(`Processing ${limitedLinks.length} image links`);
+
+      const images: ScrapedImage[] = [];
+      const concurrency = config.concurrency || this.config?.scraping?.concurrency || 2;
+      
+      console.log(`\n🚀 Parallel Processing Enabled: ${concurrency} concurrent tabs`);
+      console.log(`Processing ${limitedLinks.length} images...\n`);
+
+      // Process images in parallel using worker pool
+      const processedImages = await this.processImagesInParallel(
+        limitedLinks,
+        thumbnails,
+        config.extractDetails || false,
+        concurrency,
+        jobId
+      );
+      
+      images.push(...processedImages);
+
+      // Enhanced multi-round retry mechanism with smart error filtering
+      if (config.extractDetails) {
+        const maxRetryRounds = this.config?.scraping?.maxRetryRounds || 2;
+        console.log(`\n🔄 Starting retry mechanism (max ${maxRetryRounds} rounds)...`);
+        
+        for (let round = 1; round <= maxRetryRounds; round++) {
+          // Get all current failures
+          const failures = failedScrapesLogger.getFailures();
+          
+          if (failures.length === 0) {
+            console.log(`✅ No failed images to retry after round ${round - 1}`);
+            break;
+          }
+
+          // Filter out non-retryable errors to avoid wasting resources
+          const retryableFailures = failures.filter(failure => {
+            // Don't retry 404s (image doesn't exist)
+            if (failure.httpStatus === 404) {
+              console.log(`⏭️  Skipping retry for ${failure.imageId}: 404 Not Found`);
+              return false;
+            }
+            // Don't retry 403s (access forbidden)
+            if (failure.httpStatus === 403) {
+              console.log(`⏭️  Skipping retry for ${failure.imageId}: 403 Forbidden`);
+              return false;
+            }
+            // Don't retry 401s (unauthorized)
+            if (failure.httpStatus === 401) {
+              console.log(`⏭️  Skipping retry for ${failure.imageId}: 401 Unauthorized`);
+              return false;
+            }
+            return true;
+          });
+
+          if (retryableFailures.length === 0) {
+            console.log(`⏭️  All ${failures.length} failures are non-retryable errors (404, 403, 401)`);
+            break;
+          }
+
+          console.log(`\n🔄 Retry Round ${round}/${maxRetryRounds}: ${retryableFailures.length} retryable failures (${failures.length - retryableFailures.length} skipped as non-retryable)`);
+          
+          // Progressive delay before each retry round
+          if (round > 1) {
+            const delayBeforeRetry = 5000 * round;
+            console.log(`⏱️  Waiting ${delayBeforeRetry}ms before retry round ${round}...`);
+            await new Promise(resolve => setTimeout(resolve, delayBeforeRetry));
+          }
+          
+          const retriedImages = await this.retryFailedImages(
+            retryableFailures, 
+            thumbnails, 
+            1, // Use concurrency of 1 for retries to minimize rate limiting
+            jobId, 
+            round
+          );
+          
+          images.push(...retriedImages);
+          console.log(`✓ Retry round ${round} complete: ${retriedImages.length} images recovered`);
+        }
+        
+        // Final summary
+        const finalFailures = failedScrapesLogger.getFailures();
+        if (finalFailures.length > 0) {
+          console.log(`\n⚠️  Final status: ${finalFailures.length} images could not be scraped after ${maxRetryRounds} retry rounds`);
+        } else {
+          console.log(`\n✅ All images successfully scraped!`);
+        }
+      }
+
+      await storage.updateScrapeJob(jobId, {
+        status: "completed",
+        completedAt: new Date(),
+        images,
+        scrapedImages: images.length,
+      });
+
+      console.log(`\n✅ Job ${jobId} completed. Scraped ${images.length} images.`);
+      callbacks.onComplete?.(images);
+      
+      return images;
+    } catch (error) {
+      console.error(`Job ${jobId} failed:`, error);
+      await storage.updateScrapeJob(jobId, {
+        status: "failed",
+        completedAt: new Date(),
+        error: error instanceof Error ? error.message : "Unknown error",
+      });
+      callbacks.onError?.(error as Error);
+
+      throw error;
+    } finally {
+      await page.close();
+    }
+  }
+
+  /**
   private async dismissCookieBanner(page: Page): Promise<void> {
     try {
       const cookieSelector = this.config?.metadata?.cookieBannerSelector || '.cky-btn.cky-btn-accept';
@@ -196,421 +535,6 @@ class SmartFrameScraper {
     }
   }
 
-  async scrape(
-    jobId: string,
-    url: string,
-    config: ScrapeConfig,
-    callbacks: ScrapeCallbacks = {}
-  ): Promise<ScrapedImage[]> {
-    await this.initialize();
-    const page = await this.browser!.newPage();
-
-    // Initialize failed scrapes logger for this job
-    failedScrapesLogger.startJob(jobId);
-
-    try {
-      await storage.updateScrapeJob(jobId, { status: "scraping" });
-      
-      console.log('\n' + '='.repeat(60));
-      console.log('STARTING SCRAPE JOB');
-      console.log('='.repeat(60));
-      console.log(`Job ID: ${jobId}`);
-      console.log(`Target URL: ${url}`);
-      console.log(`Max Images: ${config.maxImages === 0 ? 'Unlimited' : config.maxImages}`);
-      console.log(`Extract Details: ${config.extractDetails ? 'Yes' : 'No'}`);
-      console.log(`Auto-scroll: ${config.autoScroll ? 'Yes' : 'No'}`);
-      console.log('='.repeat(60) + '\n');
-      
-      // Anti-detection setup
-      await page.setViewport({ width: 1920, height: 1080 });
-      await page.setUserAgent(
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-      );
-      
-      // Add benign headers that are safe to apply globally
-      await page.setExtraHTTPHeaders({
-        'Accept-Language': 'en-US,en;q=0.9',
-        'Accept-Encoding': 'gzip, deflate, br'
-      });
-      
-      // Enhanced stealth mode - hide webdriver and spoof browser properties
-      await page.evaluateOnNewDocument(() => {
-        // Hide webdriver property
-        Object.defineProperty(navigator, 'webdriver', { get: () => false });
-        
-        // Add plugins to appear more like a real browser
-        Object.defineProperty(navigator, 'plugins', {
-          get: () => [1, 2, 3, 4, 5]
-        });
-        
-        // Add languages array
-        Object.defineProperty(navigator, 'languages', {
-          get: () => ['en-US', 'en']
-        });
-        
-        // Add chrome runtime object (present in real Chrome browsers)
-        (window as any).chrome = {
-          runtime: {}
-        };
-      });
-
-      // Setup network interception for API metadata (Strategy A)
-      await page.setRequestInterception(true);
-      page.on('request', (request) => {
-        request.continue();
-      });
-
-      page.on('response', async (response) => {
-        const url = response.url();
-        // Intercept SmartFrame API metadata calls
-        if (url.includes('smartframe.') && (url.includes('/api/') || url.includes('/metadata') || url.includes('/image/'))) {
-          try {
-            const contentType = response.headers()['content-type'];
-            if (contentType && contentType.includes('application/json')) {
-              const data = await response.json();
-              if (data && (data.imageId || data.image_id || data.id)) {
-                const imageId = data.imageId || data.image_id || data.id;
-                metadataCache.set(imageId, data);
-                console.log(`Cached metadata for image: ${imageId}`);
-              }
-            }
-          } catch (error) {
-            // Silently skip non-JSON responses
-          }
-        }
-      });
-
-      console.log(`Navigating to ${url}...`);
-      
-      // Retry navigation with exponential backoff
-      let attempts = 0;
-      const maxAttempts = 3;
-      let navigationSuccess = false;
-
-      while (attempts < maxAttempts && !navigationSuccess) {
-        attempts++;
-        console.log(`Navigation attempt ${attempts}/${maxAttempts} to ${url}`);
-        
-        try {
-          await page.goto(url, {
-            waitUntil: "networkidle2",
-            timeout: 30000
-          });
-          navigationSuccess = true;
-        } catch (error) {
-          console.error(`Navigation attempt ${attempts} failed:`, error);
-          if (attempts === maxAttempts) throw error;
-          await this.waitTimeHelper!.wait(2000 * attempts);
-        }
-      }
-
-      // Wait for SmartFrame embeds to load
-      try {
-        await page.waitForSelector('smartframe-embed, .sf-thumbnail, [data-testid="image-card"]', { timeout: 15000 });
-      } catch (error) {
-        console.log("SmartFrame elements not found with standard selectors, trying fallback...");
-        await this.waitTimeHelper!.wait(3000);
-      }
-
-      // Extract thumbnails from search page
-      const thumbnails = await this.extractThumbnailsFromSearch(page);
-      console.log(`Extracted ${thumbnails.size} thumbnails from search page`);
-
-      // Create accumulator for incrementally discovered image links
-      const discoveredLinks = new Map<string, { url: string; imageId: string; hash: string }>();
-
-      // NEW: Collect initial page before autoScroll starts
-      console.log('Collecting images from initial page...');
-      const initialPageLinks = await this.collectPageImageLinks(page);
-      for (const link of initialPageLinks) {
-        discoveredLinks.set(link.imageId, link);
-      }
-      console.log(`Initial page: collected ${discoveredLinks.size} images`);
-
-      // Auto-scroll to load all images with incremental collection
-      if (config.autoScroll) {
-        await this.autoScroll(
-          page, 
-          config.maxImages, 
-          config.scrollDelay || 1000, 
-          async (progress: ScrapeProgress) => {
-            await storage.updateScrapeJob(jobId, {
-              progress: Math.round(progress.percentage),
-              scrapedImages: progress.current,
-              totalImages: progress.total,
-            });
-          },
-          async () => {
-            // Collect images from current page after each pagination
-            const pageLinks = await this.collectPageImageLinks(page);
-            for (const link of pageLinks) {
-              discoveredLinks.set(link.imageId, link);
-            }
-            console.log(`Collected ${discoveredLinks.size} unique images so far`);
-          }
-        );
-      }
-
-      await this.waitTimeHelper!.wait(3000);
-
-      // Collect final page images
-      const finalPageLinks = await this.collectPageImageLinks(page);
-      for (const link of finalPageLinks) {
-        discoveredLinks.set(link.imageId, link);
-      }
-
-      const imageLinks = Array.from(discoveredLinks.values());
-      console.log(`Total unique images collected: ${imageLinks.length}`);
-
-      const limitedLinks = config.maxImages === 0 ? imageLinks : imageLinks.slice(0, config.maxImages);
-
-      console.log(`Processing ${limitedLinks.length} image links`);
-
-      const images: ScrapedImage[] = [];
-      const concurrency = config.concurrency || this.config?.scraping?.concurrency || 2;
-      
-      console.log(`\n🚀 Parallel Processing Enabled: ${concurrency} concurrent tabs`);
-      console.log(`Processing ${limitedLinks.length} images...\n`);
-
-      // Process images in parallel using worker pool
-      const processedImages = await this.processImagesInParallel(
-        limitedLinks,
-        thumbnails,
-        config.extractDetails,
-        concurrency,
-        jobId,
-        async (currentImages: ScrapedImage[], attemptedCount: number) => {
-          // Progress based on attempted count (reaches 100% when all links processed)
-          const progress = Math.round((attemptedCount / limitedLinks.length) * 100);
-          await storage.updateScrapeJob(jobId, {
-            progress,
-            scrapedImages: currentImages.length,
-            totalImages: limitedLinks.length,
-          });
-
-          if (callbacks.onProgress) {
-            callbacks.onProgress(currentImages.length, limitedLinks.length);
-          }
-        }
-      );
-      
-      images.push(...processedImages);
-
-      // Retry failed images with controlled concurrency and multiple retry rounds
-      // Multiple rounds with increasing delays help overcome temporary rate limiting
-      const initialFailures = failedScrapesLogger.getFailures();
-      const initialFailureCount = initialFailures.length;
-      
-      const maxRetryRounds = 2; // Maximum number of retry rounds
-      for (let round = 1; round <= maxRetryRounds; round++) {
-        const failures = failedScrapesLogger.getFailures();
-        if (failures.length === 0 || !config.extractDetails) break;
-        
-        console.log(`\n🔄 Retry Round ${round}/${maxRetryRounds}: Attempting ${failures.length} failed images...`);
-        
-        // Longer delay before each retry round to avoid rate limiting
-        if (round > 1) {
-          const delayBeforeRetry = 5000 * round; // 10s, 15s, etc.
-          console.log(`⏳ Waiting ${delayBeforeRetry / 1000}s before retry round ${round}...`);
-          await this.waitTimeHelper!.wait(delayBeforeRetry);
-        }
-        
-        const retriedImages = await this.retryFailedImages(
-          failures,
-          thumbnails,
-          1, // Very low concurrency (1) for retries to avoid rate limiting
-          jobId,
-          round
-        );
-        
-        if (retriedImages.length > 0) {
-          images.push(...retriedImages);
-          console.log(`✅ Round ${round}: Successfully recovered ${retriedImages.length} images\n`);
-        }
-      }
-
-      // VPN rotation logic: Check if we need to rotate VPN based on consecutive failures
-      const currentFailures = failedScrapesLogger.getFailureCount();
-      if (this.config?.vpn?.enabled && this.vpnManager) {
-        if (this.consecutiveFailures >= (this.config.vpn.changeAfterFailures || 5)) {
-          console.log(`\n🔄 VPN ROTATION TRIGGERED: ${this.consecutiveFailures} consecutive failures detected`);
-          try {
-            await this.vpnManager.changeVPN();
-            this.consecutiveFailures = 0;
-            console.log('✅ VPN rotation completed, consecutive failures counter reset\n');
-          } catch (error) {
-            console.error('❌ VPN rotation failed:', error instanceof Error ? error.message : error);
-          }
-        }
-      }
-
-      // Deduplicate images by imageId before final storage
-      // This handles edge cases where retry logic might add the same image twice
-      const uniqueImagesMap = new Map<string, ScrapedImage>();
-      for (const img of images) {
-        if (!uniqueImagesMap.has(img.imageId)) {
-          uniqueImagesMap.set(img.imageId, img);
-        }
-      }
-      const uniqueImages = Array.from(uniqueImagesMap.values());
-      const duplicatesFound = images.length - uniqueImages.length;
-      
-      if (duplicatesFound > 0) {
-        console.log(`\n⚠️  Found ${duplicatesFound} duplicate image(s) in results - removing duplicates...`);
-      }
-
-      // Transform raw scraped data to clean metadata format
-      console.log('\n🧹 Cleaning and normalizing metadata...');
-      const cleanImages = uniqueImages.map(img => transformToCleanMetadata(img as any));
-      console.log(`✓ Transformed ${cleanImages.length} unique images to clean metadata format\n`);
-
-      // Final update with complete results (progress will be 100% since all were attempted)
-      await storage.updateScrapeJob(jobId, {
-        status: "completed",
-        progress: 100,
-        scrapedImages: cleanImages.length,
-        totalImages: limitedLinks.length,
-        images: cleanImages,
-        completedAt: new Date().toISOString(),
-      });
-
-      // Write failed scrapes log file if there were any failures
-      const failedCount = failedScrapesLogger.getFailureCount();
-      if (failedCount > 0) {
-        const logFilePath = await failedScrapesLogger.writeLogFile();
-        console.log(`\n⚠️  ${failedCount} images failed after all retry attempts`);
-        if (logFilePath) {
-          console.log(`📝 Failed scrapes logged to: ${logFilePath}`);
-        }
-      }
-
-      // FINAL RETRY: Attempt failed images from the text file one last time
-      console.log('\n🔄 Final Retry: Checking failed-scrapes.txt for additional retry opportunities...');
-      const fileFailures = await failedScrapesLogger.readFailuresFromFile();
-      
-      if (fileFailures.length > 0 && config.extractDetails) {
-        console.log(`📋 Found ${fileFailures.length} failed images in log file - attempting final retry...`);
-        
-        // Wait a bit before final retry to avoid rate limiting
-        await this.waitTimeHelper!.wait(10000);
-        
-        const finalRetryImages = await this.retryFailedImages(
-          fileFailures,
-          thumbnails,
-          1, // Very low concurrency for final retry
-          jobId,
-          99 // Special retry round number to indicate final file-based retry
-        );
-        
-        if (finalRetryImages.length > 0) {
-          images.push(...finalRetryImages);
-          
-          // Remove successful images from the failed-scrapes.txt file
-          const successfulIds = finalRetryImages.map(img => img.imageId);
-          await failedScrapesLogger.removeFromFile(successfulIds);
-          
-          console.log(`\n🎉 Final Retry Success: Recovered ${finalRetryImages.length} images from failed-scrapes.txt!`);
-          console.log(`✨ ${successfulIds.length} images removed from failed-scrapes.txt\n`);
-          
-          // Deduplicate before final update
-          const uniqueUpdatedImagesMap = new Map<string, ScrapedImage>();
-          for (const img of images) {
-            if (!uniqueUpdatedImagesMap.has(img.imageId)) {
-              uniqueUpdatedImagesMap.set(img.imageId, img);
-            }
-          }
-          const uniqueUpdatedImages = Array.from(uniqueUpdatedImagesMap.values());
-          const finalDuplicatesFound = images.length - uniqueUpdatedImages.length;
-          
-          if (finalDuplicatesFound > 0) {
-            console.log(`⚠️  Removed ${finalDuplicatesFound} duplicate(s) from final retry results`);
-          }
-          
-          // Update the job with recovered images
-          const updatedCleanImages = uniqueUpdatedImages.map(img => transformToCleanMetadata(img as any));
-          await storage.updateScrapeJob(jobId, {
-            scrapedImages: updatedCleanImages.length,
-            images: updatedCleanImages,
-          });
-        } else {
-          console.log('No additional images recovered from final retry\n');
-        }
-      } else if (fileFailures.length === 0) {
-        console.log('✅ No failed images found in log file - all scrapes successful!\n');
-      }
-
-      // Log detailed export information
-      console.log('\n' + '='.repeat(60));
-      console.log('SCRAPING COMPLETED SUCCESSFULLY');
-      console.log('='.repeat(60));
-      console.log(`Total images scraped: ${cleanImages.length}`);
-      console.log(`Total images attempted: ${limitedLinks.length}`);
-      console.log(`Failed images (after retries): ${failedCount}`);
-      console.log(`Success rate: ${((cleanImages.length / limitedLinks.length) * 100).toFixed(1)}%`);
-      if (initialFailureCount > 0) {
-        const recoveredCount = initialFailureCount - failedCount;
-        console.log(`Images recovered via retry: ${recoveredCount}`);
-      }
-      console.log(`Job ID: ${jobId}`);
-      
-      // Show sample of extracted data
-      if (images.length > 0) {
-        console.log('\nData fields extracted for each image:');
-        const sampleImage = images[0];
-        const fields = [
-          { name: 'Image ID', value: sampleImage.smartframeId },
-          { name: 'URL', value: sampleImage.url },
-          { name: 'Content Partner', value: sampleImage.contentPartner || 'N/A' },
-          { name: 'Photographer', value: sampleImage.photographer || 'N/A' },
-          { name: 'Image Size', value: sampleImage.imageSize || 'N/A' },
-          { name: 'File Size', value: sampleImage.fileSize || 'N/A' },
-          { name: 'City', value: sampleImage.city || 'N/A' },
-          { name: 'Country', value: sampleImage.country || 'N/A' },
-          { name: 'Date', value: sampleImage.date || 'N/A' },
-          { name: 'Event', value: sampleImage.matchEvent || 'N/A' },
-          { name: 'Keywords', value: sampleImage.tags.length > 0 ? `${sampleImage.tags.length} keywords` : 'N/A' },
-          { name: 'Thumbnail URL', value: sampleImage.thumbnailUrl ? 'Available' : 'N/A' },
-        ];
-        
-        fields.forEach(field => {
-          console.log(`  - ${field.name}: ${field.value}`);
-        });
-      }
-      
-      console.log('\n' + '-'.repeat(60));
-      console.log('HOW TO EXPORT YOUR DATA:');
-      console.log('-'.repeat(60));
-      console.log('1. Open your browser to: http://localhost:5000');
-      console.log('2. Click the "Export Data" button in the top-right corner');
-      console.log('3. Choose your preferred format:');
-      console.log('   - JSON: Full structured data with all metadata');
-      console.log('   - CSV: Spreadsheet format for Excel/Google Sheets');
-      console.log('\nAlternatively, use the API directly:');
-      console.log(`   GET http://localhost:5000/api/export/${jobId}?format=json`);
-      console.log(`   GET http://localhost:5000/api/export/${jobId}?format=csv`);
-      console.log('='.repeat(60) + '\n');
-
-      if (callbacks.onComplete) {
-        callbacks.onComplete(images);
-      }
-
-      return images;
-    } catch (error) {
-      console.error("Scraping error:", error);
-      await storage.updateScrapeJob(jobId, {
-        status: "error",
-        error: error instanceof Error ? error.message : "Unknown error occurred",
-      });
-
-      if (callbacks.onError && error instanceof Error) {
-        callbacks.onError(error);
-      }
-
-      throw error;
-    } finally {
-      await page.close();
-    }
-  }
 
   private async processImagesInParallel(
     linkData: Array<{ url: string; imageId: string; hash: string }>,

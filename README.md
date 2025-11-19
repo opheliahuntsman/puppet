@@ -102,6 +102,26 @@ Export job results as JSON or CSV
 
 ## Advanced Configuration
 
+### Job Queue and Concurrency
+
+The scraper includes a job queue system to prevent resource exhaustion when processing multiple bulk scrape requests. Configuration is done via `scraper.config.json`:
+
+```json
+{
+  "navigation": {
+    "timeout": 60000,
+    "waitUntil": "domcontentloaded",
+    "maxConcurrentJobs": 3
+  }
+}
+```
+
+- **timeout**: Navigation timeout in milliseconds (default: 60000 = 60 seconds)
+- **waitUntil**: Navigation wait condition - `'domcontentloaded'` (faster) or `'networkidle2'` (more thorough, default: 60000)
+- **maxConcurrentJobs**: Maximum number of scraping jobs that can run simultaneously (default: 3)
+
+When bulk scraping multiple URLs, jobs are queued and processed up to `maxConcurrentJobs` at a time, preventing navigation timeouts and resource contention.
+
 ### IP Rotation / Proxy Support
 
 The scraper includes a robust retry mechanism with exponential backoff that handles most rate limiting scenarios. For advanced users who need IP rotation, see [IP_ROTATION.md](IP_ROTATION.md) for configuration options.
