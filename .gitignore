@@ -1,0 +1,35 @@
+# Dependencies
+node_modules/
+node_modules/.bin/
+
+# Build artifacts
+dist/
+*.tsbuildinfo
+
+# Local data
+data/
+*.db
+*.db-journal
+
+# Environment files
+.env
+.env.local
+.env.production
+
+# Logs
+*.log
+failed-scrapes.txt
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Temporary files
+tmp/
+*.tmp
