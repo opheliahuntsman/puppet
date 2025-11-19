@@ -25,8 +25,12 @@ This application scrapes image data from smartframe.com search results and extra
 - **Frontend**: React, Vite, TypeScript, TailwindCSS, Radix UI
 - **Backend**: Express.js, TypeScript
 - **Database**: PostgreSQL (Drizzle ORM)
-- **Scraping**: Puppeteer
+- **Scraping**: Puppeteer (TypeScript), Playwright (Python alternative)
 - **UI Components**: shadcn/ui
+
+## Python Alternative
+
+A Python-based extractor (`smartframe_extractor.py`) is available as an alternative implementation. See [PYTHON_EXTRACTOR_README.md](./PYTHON_EXTRACTOR_README.md) for details and [SMARTFRAME_EXTRACTOR_REVIEW.md](./SMARTFRAME_EXTRACTOR_REVIEW.md) for implementation analysis.
 
 ## Quick Start
 

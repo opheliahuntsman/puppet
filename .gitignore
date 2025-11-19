@@ -2,6 +2,17 @@
 node_modules/
 node_modules/.bin/
 
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+ENV/
+.venv
+
 # Build artifacts
 dist/
 *.tsbuildinfo
