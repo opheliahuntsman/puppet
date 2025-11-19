@@ -27,5 +27,21 @@
     "timeout": 60000,
     "waitUntil": "domcontentloaded",
     "maxConcurrentJobs": 3
+  },
+  "smartframe": {
+    "extractFullImages": false,
+    "viewportMode": "thumbnail",
+    "headless": false,
+    "renderTimeout": 5000,
+    "viewportSizes": {
+      "full": {
+        "width": 9999,
+        "height": 9999
+      },
+      "thumbnail": {
+        "width": 600,
+        "height": 600
+      }
+    }
   }
 }

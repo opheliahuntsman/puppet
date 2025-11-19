@@ -52,6 +52,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
           sortBy: req.body.sortBy || "relevance",
           autoScroll: req.body.autoScroll !== false,
           scrollDelay: req.body.scrollDelay || 1000,
+          concurrency: req.body.concurrency || 5,
+          canvasExtraction: req.body.canvasExtraction || "none",
         });
 
         const job = await storage.createScrapeJob(url, config);
@@ -108,6 +110,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
         sortBy: req.body.sortBy || "relevance",
         autoScroll: req.body.autoScroll !== false,
         scrollDelay: req.body.scrollDelay || 1000,
+        concurrency: req.body.concurrency || 5,
+        canvasExtraction: req.body.canvasExtraction || "none",
       });
 
       const job = await storage.createScrapeJob(url, config);

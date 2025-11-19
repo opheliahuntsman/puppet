@@ -9,6 +9,7 @@ This application scrapes image data from smartframe.com search results and extra
 ## Features
 
 - 🔍 Web scraping of SmartFrame image galleries
+- 🎨 **Canvas Image Extraction** - Extract full-resolution images from SmartFrame embeds (9999x9999 or 600x600)
 - ⚡ **Multi-threaded parallel processing** - Up to 10x faster with concurrent browser tabs
 - 🔄 **Advanced retry mechanism** - Multiple retry rounds with exponential backoff and smart error filtering
 - 📜 Automatic infinite scroll handling
@@ -121,6 +122,30 @@ The scraper includes a job queue system to prevent resource exhaustion when proc
 - **maxConcurrentJobs**: Maximum number of scraping jobs that can run simultaneously (default: 3)
 
 When bulk scraping multiple URLs, jobs are queued and processed up to `maxConcurrentJobs` at a time, preventing navigation timeouts and resource contention.
+
+### SmartFrame Canvas Image Extraction
+
+The scraper can extract full-resolution canvas images directly from SmartFrame embeds using a Chrome extension. See [SMARTFRAME_CANVAS_EXTRACTION.md](SMARTFRAME_CANVAS_EXTRACTION.md) for complete documentation.
+
+**Quick Start:**
+
+Enable canvas extraction in `scraper.config.json`:
+
+```json
+{
+  "smartframe": {
+    "extractFullImages": true,
+    "viewportMode": "full",
+    "headless": false
+  }
+}
+```
+
+- **extractFullImages**: Enable/disable canvas extraction (default: `false`)
+- **viewportMode**: `"full"` (9999x9999) or `"thumbnail"` (600x600)
+- **headless**: Must be `false` for canvas rendering (required)
+
+Extracted images are saved to `downloaded_images/` as PNG files.
 
 ### IP Rotation / Proxy Support
 
