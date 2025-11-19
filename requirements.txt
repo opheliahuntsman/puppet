@@ -1,0 +1,8 @@
+# Python dependencies for smartframe_extractor.py
+
+# Browser automation
+playwright>=1.40.0
+
+# Optional: for enhanced features
+# pandas>=2.0.0  # For advanced CSV processing
+# pillow>=10.0.0  # For image analysis
