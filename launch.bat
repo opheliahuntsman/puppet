@@ -21,8 +21,9 @@ node --version
 echo.
 
 REM Check if dependencies are installed
-if not exist "node_modules\" (
-    echo Installing dependencies for the first time...
+REM We check for cross-env specifically as it's needed for the dev script
+if not exist "node_modules\cross-env\" (
+    echo Installing dependencies...
     echo This may take a few minutes...
     echo.
     call npm install
