@@ -25,10 +25,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(400).json({ error: "URLs array is required" });
       }
 
-      if (urls.length > 20) {
-        return res.status(400).json({ error: "Maximum 20 URLs allowed per bulk request" });
-      }
-
       const invalidUrls = urls.filter((url: string) => !url.includes("smartframe.com"));
       if (invalidUrls.length > 0) {
         return res.status(400).json({ error: "All URLs must be from smartframe.com" });
@@ -40,6 +36,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
       
       if (duplicateCount > 0) {
         console.log(`Removed ${duplicateCount} duplicate URL(s) from bulk request. Processing ${uniqueUrls.length} unique URLs.`);
+      }
+
+      if (uniqueUrls.length > 20) {
+        return res.status(400).json({ error: "Maximum 20 URLs allowed per bulk request" });
       }
 
       const jobs = [];
