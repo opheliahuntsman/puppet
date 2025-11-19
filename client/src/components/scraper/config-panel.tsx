@@ -130,6 +130,28 @@ export function ConfigPanel({ config, onChange }: ConfigPanelProps) {
           Number of concurrent browser tabs for parallel processing (1-10, default: 5)
         </p>
       </div>
+
+      <div className="space-y-2">
+        <Label htmlFor="canvasExtraction" className="text-sm font-medium">
+          Canvas Image Extraction
+        </Label>
+        <Select
+          value={config.canvasExtraction}
+          onValueChange={(value: any) => updateConfig({ canvasExtraction: value })}
+        >
+          <SelectTrigger className="h-10" data-testid="select-canvas-extraction">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="none">No Canvas Images</SelectItem>
+            <SelectItem value="thumbnail">Thumbnail (600x600)</SelectItem>
+            <SelectItem value="full">High Resolution (9999x9999)</SelectItem>
+          </SelectContent>
+        </Select>
+        <p className="text-xs text-muted-foreground">
+          Extract canvas images from SmartFrame embeds (requires visible browser)
+        </p>
+      </div>
     </div>
   );
 }

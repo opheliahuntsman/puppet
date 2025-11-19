@@ -8,6 +8,7 @@ export const scrapeConfigSchema = z.object({
   autoScroll: z.boolean().default(true),
   scrollDelay: z.number().min(500).max(5000).default(1000),
   concurrency: z.number().min(1).max(10).default(5),
+  canvasExtraction: z.enum(["none", "thumbnail", "full"]).default("none"),
 });
 
 export type ScrapeConfig = z.infer<typeof scrapeConfigSchema>;

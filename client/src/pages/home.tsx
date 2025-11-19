@@ -21,6 +21,7 @@ export default function Home() {
     autoScroll: true,
     scrollDelay: 1000,
     concurrency: 5,
+    canvasExtraction: "none",
   });
 
   const { data: currentJob } = useQuery<ScrapeJob>({

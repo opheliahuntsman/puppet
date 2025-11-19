@@ -70,22 +70,11 @@ class SmartFrameScraper {
       }
     }
 
-    // Initialize SmartFrame extension if canvas extraction is enabled
-    const smartframeConfig = this.config.smartframe || {};
-    const extractFullImages = smartframeConfig.extractFullImages || false;
-
-    if (extractFullImages && !this.extensionManager) {
-      console.log('🎨 SmartFrame canvas extraction enabled - setting up Chrome extension...');
-      this.extensionManager = new SmartFrameExtensionManager();
-      this.extensionDir = await this.extensionManager.setupExtension();
-      this.canvasExtractor = new SmartFrameCanvasExtractor();
-      console.log('✓ SmartFrame extension initialized');
-    }
-
     // Launch browser with appropriate configuration
+    // Note: Extension will be initialized dynamically per job if needed
     if (!this.browser) {
       const launchOptions: any = {
-        headless: extractFullImages ? smartframeConfig.headless : true,
+        headless: true, // Default to headless, will restart if canvas extraction is needed
         args: [
           '--no-sandbox',
           '--disable-setuid-sandbox',
@@ -95,15 +84,6 @@ class SmartFrameScraper {
           '--disable-blink-features=AutomationControlled',
         ],
       };
-
-      // Add extension if SmartFrame extraction is enabled
-      if (extractFullImages && this.extensionDir) {
-        launchOptions.args.push(
-          `--disable-extensions-except=${this.extensionDir}`,
-          `--load-extension=${this.extensionDir}`
-        );
-        console.log('✓ Chrome extension loaded for canvas extraction');
-      }
 
       this.browser = await puppeteer.launch(launchOptions);
     }
@@ -123,6 +103,40 @@ class SmartFrameScraper {
     if (!this.waitTimeHelper && this.config.waitTimes) {
       this.waitTimeHelper = new WaitTimeHelper(this.config.waitTimes);
       console.log('✓ Random wait times enabled - base:', this.config.waitTimes.scrollDelay + 'ms, variance:', this.config.waitTimes.minVariance + '-' + this.config.waitTimes.maxVariance + 'ms');
+    }
+  }
+
+  /**
+   * Initialize SmartFrame extension if needed for canvas extraction
+   */
+  private async ensureExtensionInitialized(): Promise<void> {
+    if (!this.extensionManager) {
+      console.log('🎨 Initializing SmartFrame canvas extraction extension...');
+      this.extensionManager = new SmartFrameExtensionManager();
+      this.extensionDir = await this.extensionManager.setupExtension();
+      this.canvasExtractor = new SmartFrameCanvasExtractor();
+      
+      // Restart browser with extension loaded and non-headless mode
+      if (this.browser) {
+        await this.browser.close();
+      }
+      
+      const launchOptions: any = {
+        headless: false, // Must be non-headless for canvas rendering
+        args: [
+          '--no-sandbox',
+          '--disable-setuid-sandbox',
+          '--disable-dev-shm-usage',
+          '--disable-accelerated-2d-canvas',
+          '--disable-gpu',
+          '--disable-blink-features=AutomationControlled',
+          `--disable-extensions-except=${this.extensionDir}`,
+          `--load-extension=${this.extensionDir}`,
+        ],
+      };
+      
+      this.browser = await puppeteer.launch(launchOptions);
+      console.log('✓ Browser restarted with SmartFrame extension and non-headless mode');
     }
   }
 
@@ -192,6 +206,13 @@ class SmartFrameScraper {
     callbacks: ScrapeCallbacks = {}
   ): Promise<ScrapedImage[]> {
     await this.initialize();
+    
+    // Initialize extension if canvas extraction is needed for this job
+    const canvasExtraction = config.canvasExtraction || "none";
+    if (canvasExtraction !== "none") {
+      await this.ensureExtensionInitialized();
+    }
+    
     const page = await this.browser!.newPage();
 
     // Initialize failed scrapes logger for this job
@@ -208,6 +229,7 @@ class SmartFrameScraper {
       console.log(`Max Images: ${config.maxImages === 0 ? 'Unlimited' : config.maxImages}`);
       console.log(`Extract Details: ${config.extractDetails ? 'Yes' : 'No'}`);
       console.log(`Auto-scroll: ${config.autoScroll ? 'Yes' : 'No'}`);
+      console.log(`Canvas Extraction: ${canvasExtraction}`);
       console.log('='.repeat(60) + '\n');
       
       // Anti-detection setup
@@ -365,7 +387,8 @@ class SmartFrameScraper {
         thumbnails,
         config.extractDetails || false,
         concurrency,
-        jobId
+        jobId,
+        config
       );
       
       images.push(...processedImages);
@@ -423,7 +446,8 @@ class SmartFrameScraper {
             thumbnails, 
             1, // Use concurrency of 1 for retries to minimize rate limiting
             jobId, 
-            round
+            round,
+            config
           );
           
           images.push(...retriedImages);
@@ -578,6 +602,7 @@ class SmartFrameScraper {
     extractDetails: boolean,
     concurrency: number,
     jobId: string,
+    config: ScrapeConfig,
     onProgress: (currentImages: ScrapedImage[], attemptedCount: number) => Promise<void>
   ): Promise<ScrapedImage[]> {
     const results: ScrapedImage[] = [];
@@ -586,16 +611,17 @@ class SmartFrameScraper {
     // Create a pool of worker pages
     const workerPages: Page[] = [];
     
-    // Get SmartFrame viewport configuration
-    const smartframeConfig = this.config?.smartframe || {};
-    const viewportMode = smartframeConfig.viewportMode || 'thumbnail';
-    const viewportSizes = smartframeConfig.viewportSizes || {
-      full: { width: 9999, height: 9999 },
-      thumbnail: { width: 600, height: 600 }
-    };
-    const viewport = viewportSizes[viewportMode] || { width: 1920, height: 1080 };
+    // Get SmartFrame viewport configuration from job config
+    const canvasExtraction = config.canvasExtraction || "none";
+    let viewport = { width: 1920, height: 1080 }; // Default viewport
     
-    console.log(`📐 Using viewport: ${viewport.width}x${viewport.height} (${viewportMode} mode)`);
+    if (canvasExtraction === "full") {
+      viewport = { width: 9999, height: 9999 };
+      console.log(`📐 Using full resolution viewport: ${viewport.width}x${viewport.height}`);
+    } else if (canvasExtraction === "thumbnail") {
+      viewport = { width: 600, height: 600 };
+      console.log(`📐 Using thumbnail viewport: ${viewport.width}x${viewport.height}`);
+    }
     
     for (let i = 0; i < concurrency; i++) {
       const workerPage = await this.browser!.newPage();
@@ -636,7 +662,8 @@ class SmartFrameScraper {
               link.imageId,
               link.hash,
               extractDetails,
-              thumbnails.get(link.imageId)
+              thumbnails.get(link.imageId),
+              config
             );
             
             if (image) {
@@ -1303,7 +1330,8 @@ class SmartFrameScraper {
     thumbnails: Map<string, string>,
     concurrency: number,
     jobId: string,
-    retryRound: number = 1
+    retryRound: number = 1,
+    config: ScrapeConfig
   ): Promise<ScrapedImage[]> {
     const results: ScrapedImage[] = [];
     let successCount = 0;
@@ -1343,19 +1371,20 @@ class SmartFrameScraper {
     // Create a pool of worker pages for retries
     const workerPages: Page[] = [];
     
-    // Get SmartFrame viewport configuration
-    const smartframeConfig = this.config?.smartframe || {};
-    const viewportMode = smartframeConfig.viewportMode || 'thumbnail';
-    const viewportSizes = smartframeConfig.viewportSizes || {
-      full: { width: 9999, height: 9999 },
-      thumbnail: { width: 600, height: 600 }
-    };
-    const viewport = viewportSizes[viewportMode] || { width: 1920, height: 1080 };
+    // Get SmartFrame viewport configuration from job config
+    const canvasExtraction = config.canvasExtraction || "none";
+    let viewport = { width: 1920, height: 1080 }; // Default viewport
+    
+    if (canvasExtraction === "full") {
+      viewport = { width: 9999, height: 9999 };
+    } else if (canvasExtraction === "thumbnail") {
+      viewport = { width: 600, height: 600 };
+    }
     
     for (let i = 0; i < concurrency; i++) {
       const workerPage = await this.browser!.newPage();
       
-      // Apply viewport based on SmartFrame configuration
+      // Apply viewport based on job configuration
       await workerPage.setViewport(viewport);
       await workerPage.setUserAgent(
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
@@ -1398,7 +1427,8 @@ class SmartFrameScraper {
               failure.imageId,
               hash,
               true, // extractDetails is always true for retries
-              thumbnails.get(failure.imageId)
+              thumbnails.get(failure.imageId),
+              config
             );
             
             // Check if we got meaningful data (not just partial/empty image)
@@ -1834,7 +1864,8 @@ class SmartFrameScraper {
     imageId: string,
     hash: string,
     extractDetails: boolean,
-    thumbnailUrl?: string
+    thumbnailUrl: string | undefined,
+    config: ScrapeConfig
   ): Promise<ScrapedImage | null> {
     const image: ScrapedImage = {
       imageId,
@@ -2458,10 +2489,10 @@ class SmartFrameScraper {
     }
 
     // Extract SmartFrame canvas image if enabled
-    const smartframeConfig = this.config?.smartframe || {};
-    if (smartframeConfig.extractFullImages && this.canvasExtractor && extractDetails) {
+    const canvasExtraction = config.canvasExtraction || "none";
+    if (canvasExtraction !== "none" && this.canvasExtractor && extractDetails) {
       try {
-        console.log(`[${imageId}] Extracting SmartFrame canvas image...`);
+        console.log(`[${imageId}] Extracting SmartFrame canvas image in ${canvasExtraction} mode...`);
         
         // Create output directory if it doesn't exist
         const outputDir = path.join(process.cwd(), 'downloaded_images');
@@ -2469,12 +2500,11 @@ class SmartFrameScraper {
           fs.mkdirSync(outputDir, { recursive: true });
         }
 
-        const viewportMode = smartframeConfig.viewportMode || 'thumbnail';
         const canvasImagePath = await this.canvasExtractor.extractCanvasImage(
           page,
           imageId,
           outputDir,
-          viewportMode
+          canvasExtraction as 'full' | 'thumbnail'
         );
 
         if (canvasImagePath) {
